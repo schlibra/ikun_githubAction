@@ -97,7 +97,7 @@ jobs:
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION_STRING: ${{ secrets.TG_SESSION_STRING }}
           TG_TARGET_USER: ${{ secrets.TG_TARGET_USER }}
-          TG_MESSAGE: ${{ secrets.TG_MESSAGE || /checkin }}  # 关键修复：去掉引号，正确的默认值写法
+          TG_MESSAGE: ${{ secrets.TG_MESSAGE || '/checkin' }}  # 关键修复：去掉引号，正确的默认值写法
         run: |
           # 安装依赖（指定版本，避免兼容问题）
           python -m pip install --upgrade pip
