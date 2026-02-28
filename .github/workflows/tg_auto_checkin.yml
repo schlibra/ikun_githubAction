@@ -2,18 +2,18 @@ name: Telegram Auto Checkin (Smart Random)
 
 on:
   schedule:
-    - cron: "*/10 * * * *"  # 每10分钟触发一次（仅目标窗口执行脚本）
-  workflow_dispatch:        # 手动触发测试
+    - cron: "*/10 * * * *" # 每10分钟触发一次（仅目标窗口执行脚本）
+  workflow_dispatch: # 手动触发测试
 
 env:
   TIMEZONE: "Asia/Shanghai"
-  BASE_HOUR_START: ${{ secrets.BASE_HOUR_START || 9 }}  # 起始小时（默认9点）
-  BASE_HOUR_END: ${{ secrets.BASE_HOUR_END || 14 }}      # 结束小时（默认14点）
+  BASE_HOUR_START: ${{ secrets.BASE_HOUR_START || 9 }} # 起始小时（默认9点）
+  BASE_HOUR_END: ${{ secrets.BASE_HOUR_END || 14 }} # 结束小时（默认14点）
 
 jobs:
   smart_random_checkin:
     runs-on: ubuntu-latest
-    timeout-minutes: 5  # 单次运行最长5分钟
+    timeout-minutes: 5 # 单次运行最长5分钟
 
     steps:
       # 步骤1：生成当日唯一标识（缓存/种子用）
@@ -51,16 +51,16 @@ jobs:
           BASE_START=${{ env.BASE_HOUR_START }}
           BASE_END=${{ env.BASE_HOUR_END }}
           TODAY_NUM=${{ steps.date.outputs.today_num }}
-          
+
           # 新增：获取仓库唯一标识并转为哈希值（每个fork不同）
           REPO_ID=${{ github.repository }}
           REPO_HASH=$(echo -n "$REPO_ID" | cksum | cut -d' ' -f1)
           echo "🔍 仓库唯一标识：$REPO_ID → 哈希值：$REPO_HASH"
-          
-          # 当前时间（转十进制）
-          CURRENT_HOUR=$(printf "%d" $(TZ=$TZ date +"%H"))
-          CURRENT_MINUTE=$(printf "%d" $(TZ=$TZ date +"%M"))
-          
+
+          # 当前时间（强制转十进制，避免0开头八进制问题）
+          CURRENT_HOUR=$((10#$(TZ=$TZ date +"%H")))
+          CURRENT_MINUTE=$((10#$(TZ=$TZ date +"%M")))
+
           # 优化种子：当日日期 + 仓库哈希值（确保不同用户随机结果不同）
           SEED=$(( TODAY_NUM + REPO_HASH ))
           # 粗粒度随机：锁定当日目标小时+10分钟段
@@ -69,21 +69,21 @@ jobs:
           TARGET_TEN_MINUTE=$(( (SEED + 1) % 6 ))                  # 随机10分钟段（0-5）
           TARGET_WINDOW_START=$(( TARGET_TEN_MINUTE * 10 ))         # 窗口起始分钟
           TARGET_WINDOW_END=$(( TARGET_WINDOW_START + 9 ))          # 窗口结束分钟
-          
+
           # 输出关键信息
           echo "🎯 今日目标窗口：$TARGET_HOUR点 $TARGET_WINDOW_START-$TARGET_WINDOW_END 分"
           echo "⏰ 当前时间：$CURRENT_HOUR点 $CURRENT_MINUTE 分"
-          
+
           # 传递窗口信息和仓库哈希到后续步骤
           echo "TARGET_HOUR=$TARGET_HOUR" >> $GITHUB_OUTPUT
           echo "TARGET_WINDOW_START=$TARGET_WINDOW_START" >> $GITHUB_OUTPUT
           echo "TARGET_WINDOW_END=$TARGET_WINDOW_END" >> $GITHUB_OUTPUT
           echo "REPO_HASH=$REPO_HASH" >> $GITHUB_OUTPUT
-          
+
           # 判断是否在目标窗口内
           if [ $CURRENT_HOUR -eq $TARGET_HOUR ] && \
-             [ $CURRENT_MINUTE -ge $TARGET_WINDOW_START ] && \
-             [ $CURRENT_MINUTE -le $TARGET_WINDOW_END ]; then
+            [ $CURRENT_MINUTE -ge $TARGET_WINDOW_START ] && \
+            [ $CURRENT_MINUTE -le $TARGET_WINDOW_END ]; then
             echo "✅ 进入目标窗口，执行Python脚本"
             echo "in_target_window=true" >> $GITHUB_OUTPUT
           else
@@ -111,11 +111,11 @@ jobs:
           # 安装依赖（指定版本，避免兼容问题）
           python -m pip install --upgrade pip
           pip install pyrogram==2.0.106 tgcrypto==1.2.5 pytz
-          
+
           # 运行发送脚本
           echo "🚀 启动Telegram细粒度随机发送脚本"
           python tg_auto_send.py
-          
+
           # 仅脚本执行成功时标记缓存
           if [ $? -eq 0 ]; then
             mkdir -p ~/tg_checkin_flag
