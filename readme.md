@@ -1,52 +1,109 @@
-# Telegram 智能随机签到脚本
-一款基于 GitHub Actions + Python 实现的 Telegram 自动签到工具，核心特性：**分层随机+低资源消耗+防批量执行**，每个 Fork 用户的执行时间完全独立，避免被风控。
+# Telegram Auto Checkin (Verified Stable)
+一个基于 GitHub Actions 实现的 Telegram 每日自动签到/消息发送脚本，具备随机发送窗口、补签机制和防重复发送功能，纯缓存方案稳定可靠。
 
-## ✨ 核心优势
-1. **双层随机策略**：
-   - 粗粒度：每天随机锁定 1 个小时 + 1 个 10 分钟段（如 11:20-11:29）
-   - 细粒度：在 10 分钟段内随机等待 0~5 分钟（精准到秒）
-2. **极低资源消耗**：每天仅运行 ≈5 分钟，远低于 GitHub 免费额度（2000 分钟/月）
-3. **防批量执行**：基于仓库唯一标识生成随机种子，Fork 后每个用户执行时间独立
-4. **高稳定性**：发送失败不标记缓存，支持同窗口内重试；超时兜底，避免卡死
-5. **灵活配置**：支持自定义执行时间范围、等待时长、发送消息内容
+## ✨ 核心特性
+- 🕒 **随机发送窗口**：每日在 9:00-14:00 范围内随机生成10分钟发送窗口，避免固定时间发送
+- 🔄 **自动补签机制**：目标窗口过期后自动执行补签，确保每日必发
+- 🛡️ **防重复发送**：通过 GitHub Actions 缓存持久化标记文件，避免重复执行
+- 🚫 **并发控制**：防止同一时间多实例执行导致的冲突
+- ⚡ **精简高效**：执行流程清晰，超时控制，资源占用低
+
+## 📋 前置准备
+### 1. 获取 Telegram 配置
+- `TG_API_ID` / `TG_API_HASH`：从 [my.telegram.org](https://my.telegram.org/) 获取
+- `TG_SESSION_STRING`：通过 pyrogram 生成的会话字符串
+- `TG_TARGET_USER`：接收消息的用户ID/群组ID
+- `TG_MESSAGE`：要发送的签到消息内容
+
+### 2. 配置 GitHub Secrets
+在仓库的 `Settings > Secrets and variables > Actions` 中添加以下密钥：
+| 密钥名称 | 说明 |
+|---------|------|
+| `TG_API_ID` | Telegram API ID |
+| `TG_API_HASH` | Telegram API Hash |
+| `TG_SESSION_STRING` | Pyrogram 会话字符串 |
+| `TG_TARGET_USER` | 目标接收者ID |
+| `TG_MESSAGE` | 签到消息内容 |
 
 ## 🚀 快速部署
-### 步骤 1：Fork 本仓库
-点击页面右上角 `Fork`，将仓库复制到你的 GitHub 账号下。
-
-### 步骤 2：配置 GitHub Secrets
-进入你 Fork 后的仓库 → `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，添加以下配置：
-
-| Secret 名称         | 必选 | 说明                                                         | 示例值                 |
-| ------------------- | ---- | ------------------------------------------------------------ | ---------------------- |
-| `TG_API_ID`         | ✅    | Telegram 开发者 API ID（从 [my.telegram.org](https://my.telegram.org) 获取） | 1234567                |
-| `TG_API_HASH`       | ✅    | Telegram 开发者 API Hash                                     | abcdef1234567890abcdef |
-| `TG_SESSION_STRING` | ✅    | Telegram 会话字符串（通过 pyrogram 生成）                    | （长字符串）           |
-| `TG_TARGET_USER`    | ✅    | 签到目标（机器人 ID/用户名/聊天 ID）                         | @iKuuuu_VPN_bot        |
-| `TG_MESSAGE`        | ❌    | 签到指令（默认：`/checkin`）                                 | /checkin               |
-| `BASE_HOUR_START`   | ❌    | 执行小时范围起始（默认：9）                                  | 8                      |
-| `BASE_HOUR_END`     | ❌    | 执行小时范围结束（默认：14）                                 | 20                     |
-| `RANDOM_SALT`       | ❌    | 随机盐值（增强随机性，可选）                                 | 123456                 |
-
-### 步骤 3：启用 GitHub Actions
-1. 进入仓库 → `Actions` → 点击 `I understand my workflows, go ahead and enable them`
-2. 选择 `Telegram Auto Checkin (Smart Random)` → 启用工作流
-
-### 步骤 4：测试运行（可选）
-进入 `Actions` → `Telegram Auto Checkin (Smart Random)` → `Run workflow` → 点击 `Run workflow`，手动触发测试，查看日志确认是否正常执行。
+1. Fork 本仓库
+2. 在仓库中创建 `.github/workflows/checkin.yml` 文件，复制本项目的 YAML 内容
+3. 启用 GitHub Actions 功能（Settings > Actions > General > Allow all actions）
+4. 手动触发测试：Actions > Telegram Auto Checkin > Run workflow
 
 ## ⚙️ 自定义配置
-### 1. 调整执行时间范围
-#### 方式 1：通过 Secrets 配置（推荐）
-- 修改 `BASE_HOUR_START`/`BASE_HOUR_END`，比如设置为 8~20 点：
-  - `BASE_HOUR_START`: 8
-  - `BASE_HOUR_END`: 20
-
-#### 方式 2：直接修改 YAML 文件
-编辑 `.github/workflows/tg_auto_checkin.yml`：
+### 修改发送时间范围
+修改 YAML 中的环境变量即可调整发送时间范围：
 ```yaml
 env:
-  BASE_HOUR_START: ${{ secrets.BASE_HOUR_START || 8 }}  # 起始小时
-  BASE_HOUR_END: ${{ secrets.BASE_HOUR_END || 20 }}      # 结束小时
-
+  BASE_HOUR_START: 9    # 起始小时（默认9点）
+  BASE_HOUR_END: 14     # 结束小时（默认14点）
 ```
+
+### 修改触发频率
+修改 cron 表达式调整检测频率（默认每35分钟检测一次）：
+```yaml
+on:
+  schedule:
+    - cron: "*/35 * * * *"  # 每35分钟执行一次
+```
+
+## 📝 执行流程
+```mermaid
+graph TD
+    A[触发Workflow] --> B[生成当日信息]
+    B --> C[恢复缓存]
+    C --> D{检测是否已发送}
+    D -- 已发送 --> E[结束流程]
+    D -- 未发送 --> F{计算发送窗口}
+    F -- 窗口未到 --> E
+    F -- 窗口内/已过期 --> G[拉取代码]
+    G --> H[执行发送脚本]
+    H -- 发送失败 --> I[结束流程]
+    H -- 发送成功 --> J[创建标记文件]
+    J --> K[保存缓存]
+    K --> E
+```
+
+## 🎯 关键逻辑说明
+1. **随机窗口计算**：基于仓库哈希和当日日期生成随机种子，确保每个仓库的发送时间不同
+2. **缓存机制**：使用绝对路径 `/home/runner/tg_checkin_flag` 存储标记文件，避免路径展开问题
+3. **防重复**：发送成功后创建 `sent.today` 文件并保存到缓存，后续触发会检测该文件并跳过执行
+4. **补签逻辑**：目标窗口过期后自动执行发送，确保每日至少发送一次
+
+## 📊 日志说明
+| 日志信息 | 说明 |
+|---------|------|
+| ✅ 今日已发送 | 检测到缓存中的标记文件，跳过执行 |
+| ⏳ 今日未发送 | 未检测到标记文件，继续执行 |
+| 🎯 目标窗口：X点 X-X 分 | 当日随机生成的发送窗口 |
+| ⏰ 当前时间：X点 X 分 | 执行时的当前时间 |
+| ✅ 发送成功，已创建标记文件 | 消息发送成功并创建标记文件 |
+
+## 🚨 常见问题
+### 1. 缓存保存成功但检测不到
+- 原因：路径展开不一致导致缓存恢复到错误位置
+- 解决：已使用绝对路径 `/home/runner/tg_checkin_flag` 彻底解决
+
+### 2. 重复发送消息
+- 原因：缓存未正确保存或恢复
+- 解决：发送成功后强制保存缓存，覆盖旧缓存
+
+### 3. 发送窗口过期后未补签
+- 原因：窗口判断逻辑错误
+- 解决：完善的过期窗口检测逻辑，确保自动补签
+
+## 🛠️ 技术栈
+- GitHub Actions：自动化执行环境
+- Pyrogram：Telegram 客户端库
+- Bash：流程控制和逻辑判断
+- GitHub Cache：持久化状态标记
+
+## 📄 许可证
+本项目采用 MIT 许可证开源，你可以自由使用、修改和分发。
+
+## 💡 注意事项
+1. 请遵守 GitHub Actions 使用规范，避免滥用
+2. 建议将触发频率设置为15-60分钟，避免过于频繁
+3. 定期检查运行日志，确保脚本正常执行
+4. Telegram 会话字符串有效期有限，过期后需要重新生成
