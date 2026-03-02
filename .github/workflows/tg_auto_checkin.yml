@@ -59,17 +59,12 @@ jobs:
           for KEY in $CACHE_KEYS; do
             echo "🔄 尝试恢复缓存：$KEY"
             
-            # 1. 下载缓存到临时文件
-            TMP_FILE=$(mktemp /tmp/cache.XXXXXX.tar.gz)
-            gh cache download "$KEY" --repo ${{ github.repository }} --output "$TMP_FILE"
+            # 切换到根目录，确保缓存解压到正确位置
+            cd /
+            # 下载并解压缓存到当前目录（即 /）
+            gh cache download "$KEY" --repo ${{ github.repository }}
             
-            # 2. 解压到目标目录
-            if [ -f "$TMP_FILE" ]; then
-              tar -zxf "$TMP_FILE" -C /
-              rm -f "$TMP_FILE"
-            fi
-            
-            # 3. 检查是否恢复到了标记文件
+            # 检查是否恢复到了标记文件
             if [ -f "$FLAG_FILE" ]; then
               echo "✅ 找到包含标记文件的缓存：$KEY"
               break
