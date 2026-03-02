@@ -5,6 +5,10 @@ on:
     - cron: "*/35 * * * *"
   workflow_dispatch:
 
+concurrency:
+  group: telegram-checkin
+  cancel-in-progress: false
+
 env:
   TIMEZONE: "Asia/Shanghai"
   BASE_HOUR_START: ${{ secrets.BASE_HOUR_START || 9 }}
@@ -16,12 +20,13 @@ jobs:
     timeout-minutes: 5
 
     steps:
-    # 1️⃣ 生成日期 + 缓存key
+    # 1️⃣ 生成当日信息
     - name: Generate today info
       id: date
       run: |
         TODAY=$(TZ=${{ env.TIMEZONE }} date +"%Y-%m-%d")
         TODAY_NUM=$(TZ=${{ env.TIMEZONE }} date +"%Y%m%d")
+
         CACHE_DIR="$HOME/tg_checkin_flag"
         FLAG_FILE="$CACHE_DIR/sent.today"
         CACHE_KEY="tg-checkin-$TODAY"
@@ -32,7 +37,7 @@ jobs:
         echo "flag_file=$FLAG_FILE" >> $GITHUB_OUTPUT
         echo "cache_key=$CACHE_KEY" >> $GITHUB_OUTPUT
 
-    # 2️⃣ 恢复缓存（当天固定key）
+    # 2️⃣ 恢复缓存（固定key）
     - name: Restore cache
       id: cache
       uses: actions/cache@v3
@@ -40,7 +45,7 @@ jobs:
         path: ${{ steps.date.outputs.cache_dir }}
         key: ${{ steps.date.outputs.cache_key }}
 
-    # 3️⃣ 如果已有标记，直接退出
+    # 3️⃣ 如果已发送直接退出
     - name: Skip if already sent
       run: |
         if [ -f "${{ steps.date.outputs.flag_file }}" ]; then
@@ -50,7 +55,7 @@ jobs:
           echo "⏳ 今日未发送，继续执行"
         fi
 
-    # 4️⃣ 计算随机窗口
+    # 4️⃣ 计算随机时间窗口
     - name: Calculate target window
       id: window
       run: |
@@ -95,12 +100,12 @@ jobs:
         fi
 
     # 5️⃣ 拉代码
-    - name: Checkout
+    - name: Checkout repository
       if: steps.window.outputs.need_exec == 'true'
       uses: actions/checkout@v3
 
-    # 6️⃣ 执行 Python
-    - name: Run send script
+    # 6️⃣ 执行 Python 发送
+    - name: Run Telegram send script
       if: steps.window.outputs.need_exec == 'true'
       env:
         TARGET_HOUR: ${{ steps.window.outputs.TARGET_HOUR }}
@@ -118,19 +123,18 @@ jobs:
         pip install pyrogram==2.0.106 tgcrypto==1.2.5 pytz
 
         python tg_auto_send.py
-
-        if [ $? -eq 0 ]; then
-          mkdir -p "${{ steps.date.outputs.cache_dir }}"
-          touch "${{ steps.date.outputs.flag_file }}"
-          echo "✅ 发送成功，创建标记文件"
-        else
+        if [ $? -ne 0 ]; then
           echo "❌ 发送失败"
           exit 1
         fi
 
-    # 7️⃣ 保存缓存（只会成功一次）
+        mkdir -p "${{ steps.date.outputs.cache_dir }}"
+        touch "${{ steps.date.outputs.flag_file }}"
+        echo "✅ 发送成功，创建标记文件"
+
+    # 7️⃣ 只在首次成功时保存缓存
     - name: Save cache
-      if: steps.window.outputs.need_exec == 'true' && success()
+      if: steps.window.outputs.need_exec == 'true' && success() && steps.cache.outputs.cache-hit != 'true'
       uses: actions/cache@v3
       with:
         path: ${{ steps.date.outputs.cache_dir }}
