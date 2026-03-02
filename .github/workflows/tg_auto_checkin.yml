@@ -16,28 +16,35 @@ jobs:
     timeout-minutes: 5 # 单次运行最长5分钟
 
     steps:
-      # 步骤1：生成当日唯一标识（缓存/种子用）
-      - name: Generate today key
+      # 步骤1：生成当日唯一标识+随机后缀（解决缓存并发）
+      - name: Generate today key & random suffix
         id: date
         run: |
           TODAY=$(TZ=${{ env.TIMEZONE }} date +"%Y-%m-%d")
           TODAY_NUM=$(TZ=${{ env.TIMEZONE }} date +"%Y%m%d")
-          CACHE_KEY="tg-checkin-${TODAY}"
+          # 生成随机后缀（避免缓存并发竞争）
+          RANDOM_SUFFIX=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)
+          # 核心缓存key：当日固定前缀 + 随机后缀
+          CACHE_KEY="tg-checkin-${TODAY}-${RANDOM_SUFFIX}"
+          # 恢复缓存用的前缀（只匹配当日的缓存）
+          RESTORE_KEY="tg-checkin-${TODAY}-"
+          
           echo "today=$TODAY" >> $GITHUB_OUTPUT
           echo "today_num=$TODAY_NUM" >> $GITHUB_OUTPUT
           echo "cache_key=${CACHE_KEY}" >> $GITHUB_OUTPUT
+          echo "restore_key=${RESTORE_KEY}" >> $GITHUB_OUTPUT
 
-      # 步骤2：恢复缓存（先读取旧缓存）
+      # 步骤2：恢复当日缓存（匹配所有当日前缀的缓存）
       - name: Restore checkin cache
         id: cache-restore
         uses: actions/cache/restore@v3
         with:
           path: ~/tg_checkin_flag
-          key: ${{ steps.date.outputs.cache_key }}
+          key: ${{ steps.date.outputs.cache_key }} # 随机key（主要用于保存）
           restore-keys: |
-            ${{ steps.date.outputs.cache_key }}
+            ${{ steps.date.outputs.restore_key }} # 匹配当日所有缓存
 
-      # 步骤3：检查是否已发送（直接判断文件，不依赖cache-hit）
+      # 步骤3：检查是否已发送（直接判断标记文件，最可靠）
       - name: Skip if already sent
         run: |
           FLAG_FILE=~/tg_checkin_flag/sent.today
@@ -58,51 +65,48 @@ jobs:
           BASE_END=${{ env.BASE_HOUR_END }}
           TODAY_NUM=${{ steps.date.outputs.today_num }}
 
-          # 新增：获取仓库唯一标识并转为哈希值（每个fork不同）
+          # 仓库唯一标识
           REPO_ID=${{ github.repository }}
           REPO_HASH=$(echo -n "$REPO_ID" | cksum | cut -d' ' -f1)
           echo "🔍 仓库唯一标识：$REPO_ID → 哈希值：$REPO_HASH"
 
-          # 当前时间（强制转十进制，避免0开头八进制问题）
+          # 当前时间（十进制）
           CURRENT_HOUR=$((10#$(TZ=$TZ date +"%H")))
           CURRENT_MINUTE=$((10#$(TZ=$TZ date +"%M")))
 
-          # 优化种子：当日日期 + 仓库哈希值（确保不同用户随机结果不同）
+          # 计算目标窗口
           SEED=$(( TODAY_NUM + REPO_HASH ))
-          # 粗粒度随机：锁定当日目标小时+10分钟段
           HOUR_RANGE=$(( BASE_END - BASE_START + 1 ))
-          TARGET_HOUR=$(( BASE_START + SEED % HOUR_RANGE ))          # 随机小时（9-14）
-          TARGET_TEN_MINUTE=$(( (SEED + 1) % 6 ))                  # 随机10分钟段（0-5）
-          TARGET_WINDOW_START=$(( TARGET_TEN_MINUTE * 10 ))         # 窗口起始分钟
-          TARGET_WINDOW_END=$(( TARGET_WINDOW_START + 9 ))          # 窗口结束分钟
+          TARGET_HOUR=$(( BASE_START + SEED % HOUR_RANGE ))
+          TARGET_TEN_MINUTE=$(( (SEED + 1) % 6 ))
+          TARGET_WINDOW_START=$(( TARGET_TEN_MINUTE * 10 ))
+          TARGET_WINDOW_END=$(( TARGET_WINDOW_START + 9 ))
 
-          # 输出关键信息
+          # 输出信息
           echo "🎯 今日目标窗口：$TARGET_HOUR点 $TARGET_WINDOW_START-$TARGET_WINDOW_END 分"
           echo "⏰ 当前时间：$CURRENT_HOUR点 $CURRENT_MINUTE 分"
 
-          # 传递窗口信息和仓库哈希到后续步骤
+          # 传递变量
           echo "TARGET_HOUR=$TARGET_HOUR" >> $GITHUB_OUTPUT
           echo "TARGET_WINDOW_START=$TARGET_WINDOW_START" >> $GITHUB_OUTPUT
           echo "TARGET_WINDOW_END=$TARGET_WINDOW_END" >> $GITHUB_OUTPUT
           echo "REPO_HASH=$REPO_HASH" >> $GITHUB_OUTPUT
+          echo "is_retry=false" >> $GITHUB_OUTPUT
 
-          # 核心逻辑判断：
-          # 1. 若在目标窗口内 → 正常执行（带随机等待）
-          # 2. 若目标窗口已过期 → 补签（立即发送，无等待）
-          # 3. 若目标窗口未到 → 跳过
+          # 核心逻辑判断
           if [ $CURRENT_HOUR -eq $TARGET_HOUR ] && \
              [ $CURRENT_MINUTE -ge $TARGET_WINDOW_START ] && \
              [ $CURRENT_MINUTE -le $TARGET_WINDOW_END ]; then
-            echo "✅ 进入目标窗口，将执行正常随机发送"
+            echo "✅ 进入目标窗口，正常执行"
             echo "need_exec=true" >> $GITHUB_OUTPUT
             echo "is_retry=false" >> $GITHUB_OUTPUT
           elif [ $CURRENT_HOUR -gt $TARGET_HOUR ] || \
                ([ $CURRENT_HOUR -eq $TARGET_HOUR ] && [ $CURRENT_MINUTE -gt $TARGET_WINDOW_END ]); then
-            echo "⚠️  目标窗口已过期且未发送，执行补签"
+            echo "⚠️  目标窗口已过期，执行补签"
             echo "need_exec=true" >> $GITHUB_OUTPUT
             echo "is_retry=true" >> $GITHUB_OUTPUT
           else
-            echo "⏰ 目标窗口未到，跳过本次触发"
+            echo "⏰ 目标窗口未到，跳过"
             echo "need_exec=false" >> $GITHUB_OUTPUT
             echo "is_retry=false" >> $GITHUB_OUTPUT
             exit 0
@@ -112,43 +116,41 @@ jobs:
         if: steps.window.outputs.need_exec == 'true'
         uses: actions/checkout@v6
 
-      # 步骤5：执行Python脚本（细粒度随机+发送）
+      # 步骤5：执行Python脚本（正常/补签）
       - name: Run Python script (normal/retry)
         if: steps.window.outputs.need_exec == 'true'
         env:
-          # 传递窗口信息和仓库哈希给Python
           TARGET_HOUR: ${{ steps.window.outputs.TARGET_HOUR }}
           TARGET_WINDOW_START: ${{ steps.window.outputs.TARGET_WINDOW_START }}
           TARGET_WINDOW_END: ${{ steps.window.outputs.TARGET_WINDOW_END }}
           REPO_HASH: ${{ steps.window.outputs.REPO_HASH }}
           IS_RETRY: ${{ steps.window.outputs.is_retry }}
-          # TG核心配置（仅传递Secrets，默认值由Python处理）
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION_STRING: ${{ secrets.TG_SESSION_STRING }}
           TG_TARGET_USER: ${{ secrets.TG_TARGET_USER }}
           TG_MESSAGE: ${{ secrets.TG_MESSAGE }}
         run: |
-          # 安装依赖（指定版本，避免兼容问题）
+          # 安装依赖
           python -m pip install --upgrade pip
           pip install pyrogram==2.0.106 tgcrypto==1.2.5 pytz
 
-          # 运行发送脚本
-          echo "🚀 启动Telegram细粒度随机发送脚本（补签模式：$IS_RETRY）"
+          # 运行脚本
+          echo "🚀 启动发送脚本（补签模式：$IS_RETRY）"
           python tg_auto_send.py
 
-          # 仅脚本执行成功时标记缓存
+          # 标记已发送
           if [ $? -eq 0 ]; then
             mkdir -p ~/tg_checkin_flag
             touch ~/tg_checkin_flag/sent.today
-            echo "✅ 消息发送成功，创建已发送标记文件"
+            echo "✅ 消息发送成功，创建标记文件"
           else
-            echo "❌ 消息发送失败，不标记缓存（后续可重试）"
+            echo "❌ 消息发送失败，不标记缓存"
             exit 1
           fi
 
-      # 步骤6：强制保存新缓存（核心修复：覆盖旧缓存）
-      - name: Force save checkin cache
+      # 步骤6：保存缓存（随机key，避免并发竞争）
+      - name: Save checkin cache
         if: steps.window.outputs.need_exec == 'true' && success()
         uses: actions/cache/save@v3
         with:
