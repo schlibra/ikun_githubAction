@@ -14,6 +14,8 @@ jobs:
   smart_random_checkin:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      actions: write # 必须授予此权限，才能删除缓存
 
     steps:
       # 步骤1：生成当日标识+绝对路径
@@ -32,50 +34,21 @@ jobs:
           echo "flag_file=${FLAG_FILE}" >> $GITHUB_OUTPUT
           echo "cache_prefix=${CACHE_PREFIX}" >> $GITHUB_OUTPUT
 
-      # 步骤2：暴力恢复所有当日缓存（核心！遍历+强制恢复）
-      - name: Force restore all today cache
-        run: |
-          CACHE_DIR=${{ steps.date.outputs.cache_dir }}
-          FLAG_FILE=${{ steps.date.outputs.flag_file }}
-          CACHE_PREFIX=${{ steps.date.outputs.cache_prefix }}
-          
-          # 创建缓存目录
-          mkdir -p $CACHE_DIR
-          
-          # 安装gh cli（用于查询缓存）
-          type -p gh >/dev/null || (sudo apt update && sudo apt install gh -y)
-          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
-          
-          # 查询所有当日缓存
-          echo "🔍 查询所有当日缓存..."
-          CACHE_KEYS=$(gh cache list --repo ${{ github.repository }} | grep "$CACHE_PREFIX" | awk '{print $1}')
-          
-          if [ -z "$CACHE_KEYS" ]; then
-            echo "ℹ️  未找到任何当日缓存"
-            exit 0
-          fi
+      # 步骤2：恢复当日缓存（官方Action）
+      - name: Restore checkin cache
+        id: cache-restore
+        uses: actions/cache/restore@v3
+        with:
+          path: ${{ steps.date.outputs.cache_dir }}
+          key: ${{ steps.date.outputs.cache_prefix }}-${{ github.run_id }} # 用run_id确保唯一性
+          restore-keys: |
+            ${{ steps.date.outputs.cache_prefix }}- # 前缀匹配，恢复最新的
 
-          # 遍历所有缓存并强制恢复
-          for KEY in $CACHE_KEYS; do
-            echo "🔄 尝试恢复缓存：$KEY"
-            
-            # 切换到根目录，确保缓存解压到正确位置
-            cd /
-            # 下载并解压缓存到当前目录（即 /）
-            gh cache download "$KEY" --repo ${{ github.repository }}
-            
-            # 检查是否恢复到了标记文件
-            if [ -f "$FLAG_FILE" ]; then
-              echo "✅ 找到包含标记文件的缓存：$KEY"
-              break
-            fi
-          done
-
-      # 步骤3：检查标记文件（绝对可靠）
+      # 步骤3：检查标记文件
       - name: Skip if already sent
         run: |
           FLAG_FILE=${{ steps.date.outputs.flag_file }}
-          echo "🔍 最终检查标记文件：$FLAG_FILE"
+          echo "🔍 检查标记文件：$FLAG_FILE"
           
           if [ -f "$FLAG_FILE" ]; then
             echo "✅ 检测到已发送标记，直接退出"
@@ -156,10 +129,28 @@ jobs:
             exit 1
           fi
 
-      # 步骤7：强制保存缓存（唯一KEY）
-      - name: Force save cache
+      # 步骤7：主动删除所有旧的当日缓存（核心！确保下次恢复的是最新的）
+      - name: Delete old caches for today
+        if: steps.window.outputs.need_exec == 'true' && success()
+        run: |
+          CACHE_PREFIX=${{ steps.date.outputs.cache_prefix }}
+          echo "🗑️ 清理所有旧的当日缓存: $CACHE_PREFIX"
+          
+          # 安装gh cli
+          type -p gh >/dev/null || (sudo apt update && sudo apt install gh -y)
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+          
+          # 列出并删除所有旧缓存
+          OLD_CACHE_KEYS=$(gh cache list --repo ${{ github.repository }} | grep "$CACHE_PREFIX" | grep -v "${{ github.run_id }}" | awk '{print $1}')
+          for KEY in $OLD_CACHE_KEYS; do
+            echo "删除旧缓存: $KEY"
+            gh cache delete "$KEY" --repo ${{ github.repository }} --yes
+          done
+
+      # 步骤8：保存新缓存（包含标记文件）
+      - name: Save checkin cache
         if: steps.window.outputs.need_exec == 'true' && success()
         uses: actions/cache/save@v3
         with:
           path: ${{ steps.date.outputs.cache_dir }}
-          key: ${{ steps.date.outputs.cache_prefix }}-$(date +%s)
+          key: ${{ steps.date.outputs.cache_prefix }}-${{ github.run_id }}
