@@ -37,15 +37,15 @@ jobs:
         echo "flag_file=$FLAG_FILE" >> $GITHUB_OUTPUT
         echo "cache_key=$CACHE_KEY" >> $GITHUB_OUTPUT
 
-    # 2️⃣ 恢复缓存（固定key）
+    # 2️⃣ 恢复缓存（只恢复，不注册保存）
     - name: Restore cache
       id: cache
-      uses: actions/cache@v3
+      uses: actions/cache/restore@v3
       with:
         path: ${{ steps.date.outputs.cache_dir }}
         key: ${{ steps.date.outputs.cache_key }}
 
-    # 3️⃣ 如果已发送直接退出
+    # 3️⃣ 已发送直接退出
     - name: Skip if already sent
       run: |
         if [ -f "${{ steps.date.outputs.flag_file }}" ]; then
@@ -55,7 +55,7 @@ jobs:
           echo "⏳ 今日未发送，继续执行"
         fi
 
-    # 4️⃣ 计算随机时间窗口
+    # 4️⃣ 计算目标窗口
     - name: Calculate target window
       id: window
       run: |
@@ -104,7 +104,7 @@ jobs:
       if: steps.window.outputs.need_exec == 'true'
       uses: actions/checkout@v3
 
-    # 6️⃣ 执行 Python 发送
+    # 6️⃣ 执行 Python
     - name: Run Telegram send script
       if: steps.window.outputs.need_exec == 'true'
       env:
@@ -132,10 +132,10 @@ jobs:
         touch "${{ steps.date.outputs.flag_file }}"
         echo "✅ 发送成功，创建标记文件"
 
-    # 7️⃣ 只在首次成功时保存缓存
+    # 7️⃣ 保存缓存（只保存一次，不会冲突）
     - name: Save cache
       if: steps.window.outputs.need_exec == 'true' && success() && steps.cache.outputs.cache-hit != 'true'
-      uses: actions/cache@v3
+      uses: actions/cache/save@v3
       with:
         path: ${{ steps.date.outputs.cache_dir }}
         key: ${{ steps.date.outputs.cache_key }}
