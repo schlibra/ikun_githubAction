@@ -24,6 +24,7 @@ jobs:
           TODAY_NUM=$(TZ=${{ env.TIMEZONE }} date +"%Y%m%d")
           echo "today=$TODAY" >> $GITHUB_OUTPUT
           echo "today_num=$TODAY_NUM" >> $GITHUB_OUTPUT
+          echo "CACHE_KEY=tg-checkin-$TODAY" >> $GITHUB_OUTPUT # 预计算缓存key
 
       # 步骤2：缓存防重复（当日仅发送1次）
       - name: Cache checkin status
@@ -31,16 +32,19 @@ jobs:
         uses: actions/cache@v3
         with:
           path: ~/tg_checkin_flag
-          key: tg-checkin-${{ steps.date.outputs.today }}
+          key: ${{ steps.date.outputs.CACHE_KEY }} # 使用预计算的key
           restore-keys: |
-            tg-checkin-${{ steps.date.outputs.today }}
+            ${{ steps.date.outputs.CACHE_KEY }}
 
-      # 步骤3：已发送则直接退出
+      # 步骤3：检查并跳过（核心修复：直接在shell中判断文件是否存在）
       - name: Skip if already sent
-        if: steps.cache-status.outputs.cache-hit == 'true'
         run: |
-          echo "✅ 今日已发送，跳过本次触发"
-          exit 0
+          if [ -f ~/tg_checkin_flag/sent.today ]; then
+            echo "✅ 检测到标记文件，今日已发送，跳过本次触发"
+            exit 0
+          else
+            echo "⏳ 未检测到标记文件，今日尚未发送"
+          fi
 
       # 步骤4：计算当日目标时间窗口+判断执行逻辑
       - name: Calculate target window & check execution logic
@@ -140,3 +144,10 @@ jobs:
             echo "❌ 消息发送失败，不标记缓存（后续可重试）"
             exit 1
           fi
+      # 步骤6：标记缓存（保持不变）
+      - name: Mark cache as sent
+        if: steps.window.outputs.need_exec == 'true' && success()
+        run: |
+          mkdir -p ~/tg_checkin_flag
+          touch ~/tg_checkin_flag/sent.today
+          echo "✅ 已创建标记文件，标记当日已完成"
