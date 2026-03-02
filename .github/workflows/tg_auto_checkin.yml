@@ -2,7 +2,7 @@ name: Telegram Auto Checkin (Smart Random)
 
 on:
   schedule:
-    - cron: "*/35 * * * *" # 降低触发频率：每35分钟一次（每天仅41次）
+    - cron: "*/35 * * * *" # 每35分钟触发一次
   workflow_dispatch: # 手动触发测试
 
 env:
@@ -22,28 +22,30 @@ jobs:
         run: |
           TODAY=$(TZ=${{ env.TIMEZONE }} date +"%Y-%m-%d")
           TODAY_NUM=$(TZ=${{ env.TIMEZONE }} date +"%Y%m%d")
+          CACHE_KEY="tg-checkin-${TODAY}"
           echo "today=$TODAY" >> $GITHUB_OUTPUT
           echo "today_num=$TODAY_NUM" >> $GITHUB_OUTPUT
-          echo "CACHE_KEY=tg-checkin-$TODAY" >> $GITHUB_OUTPUT # 预计算缓存key
+          echo "cache_key=${CACHE_KEY}" >> $GITHUB_OUTPUT
 
-      # 步骤2：缓存防重复（当日仅发送1次）
-      - name: Cache checkin status
-        id: cache-status
-        uses: actions/cache@v3
+      # 步骤2：恢复缓存（先读取旧缓存）
+      - name: Restore checkin cache
+        id: cache-restore
+        uses: actions/cache/restore@v3
         with:
           path: ~/tg_checkin_flag
-          key: ${{ steps.date.outputs.CACHE_KEY }} # 使用预计算的key
+          key: ${{ steps.date.outputs.cache_key }}
           restore-keys: |
-            ${{ steps.date.outputs.CACHE_KEY }}
+            ${{ steps.date.outputs.cache_key }}
 
-      # 步骤3：检查并跳过（核心修复：直接在shell中判断文件是否存在）
+      # 步骤3：检查是否已发送（直接判断文件，不依赖cache-hit）
       - name: Skip if already sent
         run: |
-          if [ -f ~/tg_checkin_flag/sent.today ]; then
-            echo "✅ 检测到标记文件，今日已发送，跳过本次触发"
+          FLAG_FILE=~/tg_checkin_flag/sent.today
+          if [ -f "$FLAG_FILE" ]; then
+            echo "✅ 检测到已发送标记文件，今日已发送，跳过本次触发"
             exit 0
           else
-            echo "⏳ 未检测到标记文件，今日尚未发送"
+            echo "⏳ 未检测到发送标记，继续执行"
           fi
 
       # 步骤4：计算当日目标时间窗口+判断执行逻辑
@@ -78,7 +80,7 @@ jobs:
           echo "🎯 今日目标窗口：$TARGET_HOUR点 $TARGET_WINDOW_START-$TARGET_WINDOW_END 分"
           echo "⏰ 当前时间：$CURRENT_HOUR点 $CURRENT_MINUTE 分"
 
-          # 传递基础信息到后续步骤
+          # 传递窗口信息和仓库哈希到后续步骤
           echo "TARGET_HOUR=$TARGET_HOUR" >> $GITHUB_OUTPUT
           echo "TARGET_WINDOW_START=$TARGET_WINDOW_START" >> $GITHUB_OUTPUT
           echo "TARGET_WINDOW_END=$TARGET_WINDOW_END" >> $GITHUB_OUTPUT
@@ -110,11 +112,11 @@ jobs:
         if: steps.window.outputs.need_exec == 'true'
         uses: actions/checkout@v6
 
-      # 步骤5：执行Python脚本（区分正常执行/补签）
+      # 步骤5：执行Python脚本（细粒度随机+发送）
       - name: Run Python script (normal/retry)
         if: steps.window.outputs.need_exec == 'true'
         env:
-          # 传递窗口信息、仓库哈希、补签标识给Python
+          # 传递窗口信息和仓库哈希给Python
           TARGET_HOUR: ${{ steps.window.outputs.TARGET_HOUR }}
           TARGET_WINDOW_START: ${{ steps.window.outputs.TARGET_WINDOW_START }}
           TARGET_WINDOW_END: ${{ steps.window.outputs.TARGET_WINDOW_END }}
@@ -132,31 +134,23 @@ jobs:
           pip install pyrogram==2.0.106 tgcrypto==1.2.5 pytz
 
           # 运行发送脚本
-          echo "🚀 启动Telegram发送脚本（补签模式：$IS_RETRY）"
+          echo "🚀 启动Telegram细粒度随机发送脚本（补签模式：$IS_RETRY）"
           python tg_auto_send.py
 
           # 仅脚本执行成功时标记缓存
           if [ $? -eq 0 ]; then
             mkdir -p ~/tg_checkin_flag
             touch ~/tg_checkin_flag/sent.today
-            echo "✅ 消息发送成功，标记当日已完成"
+            echo "✅ 消息发送成功，创建已发送标记文件"
           else
             echo "❌ 消息发送失败，不标记缓存（后续可重试）"
             exit 1
           fi
-      # 步骤6：标记缓存（保持不变）
-      # 步骤：标记缓存（核心修复：强制重新保存缓存）
-      - name: Mark cache as sent
-        if: steps.window.outputs.need_exec == 'true' && success()
-        run: |
-          mkdir -p ~/tg_checkin_flag
-          touch ~/tg_checkin_flag/sent.today
-          echo "✅ 已创建标记文件，标记当日已完成"
 
-      # 新增步骤：强制重新保存缓存
-      - name: Force save cache with new flag
+      # 步骤6：强制保存新缓存（核心修复：覆盖旧缓存）
+      - name: Force save checkin cache
         if: steps.window.outputs.need_exec == 'true' && success()
-        uses: actions/cache@v3
+        uses: actions/cache/save@v3
         with:
           path: ~/tg_checkin_flag
-          key: ${{ steps.date.outputs.CACHE_KEY }} # 使用同一个缓存key
+          key: ${{ steps.date.outputs.cache_key }}
