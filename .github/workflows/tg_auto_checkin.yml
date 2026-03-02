@@ -2,7 +2,7 @@ name: Telegram Auto Checkin (Smart Random)
 
 on:
   schedule:
-    - cron: "*/35 * * * *" # 每35分钟触发一次
+    - cron: "*/35 * * * *" # 每35分钟触发一次（降低频率，避免GitHub延迟）
   workflow_dispatch: # 手动触发测试
 
 env:
@@ -16,38 +16,49 @@ jobs:
     timeout-minutes: 5 # 单次运行最长5分钟
 
     steps:
-      # 步骤1：生成当日唯一标识+随机后缀（解决缓存并发）
-      - name: Generate today key & random suffix
+      # 步骤1：生成当日标识+随机后缀+绝对路径（核心解决路径/并发问题）
+      - name: Generate today key & config
         id: date
         run: |
+          # 当日基础信息
           TODAY=$(TZ=${{ env.TIMEZONE }} date +"%Y-%m-%d")
           TODAY_NUM=$(TZ=${{ env.TIMEZONE }} date +"%Y%m%d")
-          # 生成随机后缀（避免缓存并发竞争）
-          RANDOM_SUFFIX=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)
-          # 核心缓存key：当日固定前缀 + 随机后缀
-          CACHE_KEY="tg-checkin-${TODAY}-${RANDOM_SUFFIX}"
-          # 恢复缓存用的前缀（只匹配当日的缓存）
-          RESTORE_KEY="tg-checkin-${TODAY}-"
           
+          # 随机后缀（解决缓存并发竞争）
+          RANDOM_SUFFIX=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)
+          
+          # 缓存Key配置
+          CACHE_KEY="tg-checkin-${TODAY}-${RANDOM_SUFFIX}" # 保存用唯一Key
+          RESTORE_KEY="tg-checkin-${TODAY}-"               # 恢复用前缀匹配
+          
+          # 绝对路径（解决~展开不一致问题）
+          CACHE_DIR="/home/runner/tg_checkin_flag"
+          FLAG_FILE="${CACHE_DIR}/sent.today"
+          
+          # 输出所有配置到后续步骤
           echo "today=$TODAY" >> $GITHUB_OUTPUT
           echo "today_num=$TODAY_NUM" >> $GITHUB_OUTPUT
           echo "cache_key=${CACHE_KEY}" >> $GITHUB_OUTPUT
           echo "restore_key=${RESTORE_KEY}" >> $GITHUB_OUTPUT
+          echo "cache_dir=${CACHE_DIR}" >> $GITHUB_OUTPUT
+          echo "flag_file=${FLAG_FILE}" >> $GITHUB_OUTPUT
 
-      # 步骤2：恢复当日缓存（匹配所有当日前缀的缓存）
+      # 步骤2：恢复当日缓存（前缀匹配，确保能读到已发送的标记）
       - name: Restore checkin cache
         id: cache-restore
         uses: actions/cache/restore@v3
         with:
-          path: ~/tg_checkin_flag
-          key: ${{ steps.date.outputs.cache_key }} # 随机key（主要用于保存）
+          path: ${{ steps.date.outputs.cache_dir }} # 绝对路径，避免路径问题
+          key: ${{ steps.date.outputs.cache_key }}
           restore-keys: |
             ${{ steps.date.outputs.restore_key }} # 匹配当日所有缓存
 
-      # 步骤3：检查是否已发送（直接判断标记文件，最可靠）
+      # 步骤3：检查是否已发送（直接判断绝对路径下的标记文件，最可靠）
       - name: Skip if already sent
         run: |
-          FLAG_FILE=~/tg_checkin_flag/sent.today
+          FLAG_FILE=${{ steps.date.outputs.flag_file }}
+          echo "🔍 检查标记文件：$FLAG_FILE"
+          
           if [ -f "$FLAG_FILE" ]; then
             echo "✅ 检测到已发送标记文件，今日已发送，跳过本次触发"
             exit 0
@@ -55,8 +66,8 @@ jobs:
             echo "⏳ 未检测到发送标记，继续执行"
           fi
 
-      # 步骤4：计算当日目标时间窗口+判断执行逻辑
-      - name: Calculate target window & check execution logic
+      # 步骤4：计算目标窗口+判断执行逻辑（正常/补签/跳过）
+      - name: Calculate target window & check logic
         id: window
         run: |
           # 基础配置
@@ -65,94 +76,97 @@ jobs:
           BASE_END=${{ env.BASE_HOUR_END }}
           TODAY_NUM=${{ steps.date.outputs.today_num }}
 
-          # 仓库唯一标识
+          # 仓库唯一标识（确保不同fork用户执行时间不同）
           REPO_ID=${{ github.repository }}
           REPO_HASH=$(echo -n "$REPO_ID" | cksum | cut -d' ' -f1)
           echo "🔍 仓库唯一标识：$REPO_ID → 哈希值：$REPO_HASH"
 
-          # 当前时间（十进制）
+          # 当前时间（强制十进制，避免0开头八进制问题）
           CURRENT_HOUR=$((10#$(TZ=$TZ date +"%H")))
           CURRENT_MINUTE=$((10#$(TZ=$TZ date +"%M")))
 
-          # 计算目标窗口
+          # 计算当日目标窗口
           SEED=$(( TODAY_NUM + REPO_HASH ))
           HOUR_RANGE=$(( BASE_END - BASE_START + 1 ))
-          TARGET_HOUR=$(( BASE_START + SEED % HOUR_RANGE ))
-          TARGET_TEN_MINUTE=$(( (SEED + 1) % 6 ))
-          TARGET_WINDOW_START=$(( TARGET_TEN_MINUTE * 10 ))
-          TARGET_WINDOW_END=$(( TARGET_WINDOW_START + 9 ))
+          TARGET_HOUR=$(( BASE_START + SEED % HOUR_RANGE ))          # 随机小时（9-14）
+          TARGET_TEN_MINUTE=$(( (SEED + 1) % 6 ))                  # 随机10分钟段（0-5）
+          TARGET_WINDOW_START=$(( TARGET_TEN_MINUTE * 10 ))         # 窗口起始分钟
+          TARGET_WINDOW_END=$(( TARGET_WINDOW_START + 9 ))          # 窗口结束分钟
 
-          # 输出信息
+          # 输出关键信息
           echo "🎯 今日目标窗口：$TARGET_HOUR点 $TARGET_WINDOW_START-$TARGET_WINDOW_END 分"
           echo "⏰ 当前时间：$CURRENT_HOUR点 $CURRENT_MINUTE 分"
 
-          # 传递变量
+          # 传递变量到后续步骤
           echo "TARGET_HOUR=$TARGET_HOUR" >> $GITHUB_OUTPUT
           echo "TARGET_WINDOW_START=$TARGET_WINDOW_START" >> $GITHUB_OUTPUT
           echo "TARGET_WINDOW_END=$TARGET_WINDOW_END" >> $GITHUB_OUTPUT
           echo "REPO_HASH=$REPO_HASH" >> $GITHUB_OUTPUT
-          echo "is_retry=false" >> $GITHUB_OUTPUT
 
-          # 核心逻辑判断
+          # 核心执行逻辑判断
           if [ $CURRENT_HOUR -eq $TARGET_HOUR ] && \
              [ $CURRENT_MINUTE -ge $TARGET_WINDOW_START ] && \
              [ $CURRENT_MINUTE -le $TARGET_WINDOW_END ]; then
-            echo "✅ 进入目标窗口，正常执行"
+            echo "✅ 进入目标窗口，执行正常随机发送"
             echo "need_exec=true" >> $GITHUB_OUTPUT
             echo "is_retry=false" >> $GITHUB_OUTPUT
           elif [ $CURRENT_HOUR -gt $TARGET_HOUR ] || \
                ([ $CURRENT_HOUR -eq $TARGET_HOUR ] && [ $CURRENT_MINUTE -gt $TARGET_WINDOW_END ]); then
-            echo "⚠️  目标窗口已过期，执行补签"
+            echo "⚠️  目标窗口已过期，执行补签（立即发送）"
             echo "need_exec=true" >> $GITHUB_OUTPUT
             echo "is_retry=true" >> $GITHUB_OUTPUT
           else
-            echo "⏰ 目标窗口未到，跳过"
+            echo "⏰ 目标窗口未到，跳过本次触发"
             echo "need_exec=false" >> $GITHUB_OUTPUT
             echo "is_retry=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-      - name: Checkout the repository
+      # 步骤5：拉取仓库代码（仅执行发送时需要）
+      - name: Checkout repository
         if: steps.window.outputs.need_exec == 'true'
         uses: actions/checkout@v6
 
-      # 步骤5：执行Python脚本（正常/补签）
-      - name: Run Python script (normal/retry)
+      # 步骤6：执行Python发送脚本（区分正常/补签模式）
+      - name: Run Python send script
         if: steps.window.outputs.need_exec == 'true'
         env:
+          # 窗口信息
           TARGET_HOUR: ${{ steps.window.outputs.TARGET_HOUR }}
           TARGET_WINDOW_START: ${{ steps.window.outputs.TARGET_WINDOW_START }}
           TARGET_WINDOW_END: ${{ steps.window.outputs.TARGET_WINDOW_END }}
           REPO_HASH: ${{ steps.window.outputs.REPO_HASH }}
           IS_RETRY: ${{ steps.window.outputs.is_retry }}
+          # TG核心配置
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION_STRING: ${{ secrets.TG_SESSION_STRING }}
           TG_TARGET_USER: ${{ secrets.TG_TARGET_USER }}
           TG_MESSAGE: ${{ secrets.TG_MESSAGE }}
         run: |
-          # 安装依赖
+          # 安装依赖（指定版本，避免兼容问题）
           python -m pip install --upgrade pip
           pip install pyrogram==2.0.106 tgcrypto==1.2.5 pytz
 
-          # 运行脚本
-          echo "🚀 启动发送脚本（补签模式：$IS_RETRY）"
+          # 运行发送脚本
+          echo "🚀 启动Telegram发送脚本（补签模式：$IS_RETRY）"
           python tg_auto_send.py
 
-          # 标记已发送
+          # 仅发送成功时创建标记文件（绝对路径）
           if [ $? -eq 0 ]; then
-            mkdir -p ~/tg_checkin_flag
-            touch ~/tg_checkin_flag/sent.today
-            echo "✅ 消息发送成功，创建标记文件"
+            CACHE_DIR=${{ steps.date.outputs.cache_dir }}
+            mkdir -p "$CACHE_DIR"
+            touch "${CACHE_DIR}/sent.today"
+            echo "✅ 消息发送成功，创建已发送标记文件"
           else
-            echo "❌ 消息发送失败，不标记缓存"
+            echo "❌ 消息发送失败，不创建标记文件（后续可重试）"
             exit 1
           fi
 
-      # 步骤6：保存缓存（随机key，避免并发竞争）
+      # 步骤7：强制保存缓存（唯一Key，避免并发冲突）
       - name: Save checkin cache
         if: steps.window.outputs.need_exec == 'true' && success()
         uses: actions/cache/save@v3
         with:
-          path: ~/tg_checkin_flag
-          key: ${{ steps.date.outputs.cache_key }}
+          path: ${{ steps.date.outputs.cache_dir }} # 绝对路径
+          key: ${{ steps.date.outputs.cache_key }}  # 带随机后缀的唯一Key
